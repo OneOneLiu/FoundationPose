@@ -1,6 +1,7 @@
 docker rm -f foundationpose
 DIR=$(pwd)/../
 xhost +
+XAUTH=/tmp/.docker.xauth
 docker run -it \
     --env="DISPLAY=$DISPLAY" \
     --env="QT_X11_NO_MITSHM=1" \
