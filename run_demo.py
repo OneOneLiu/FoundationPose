@@ -15,8 +15,8 @@ import argparse
 if __name__=='__main__':
   parser = argparse.ArgumentParser()
   code_dir = os.path.dirname(os.path.realpath(__file__))
-  parser.add_argument('--mesh_file', type=str, default=f'{code_dir}/demo_data/tube100/mesh/100_mm_tube.obj')
-  parser.add_argument('--test_scene_dir', type=str, default=f'{code_dir}/demo_data/tube100')
+  parser.add_argument('--mesh_file', type=str, default=f'{code_dir}/demo_data/mustard1/mesh/textured_simple.obj')
+  parser.add_argument('--test_scene_dir', type=str, default=f'{code_dir}/demo_data/mustard1')
   parser.add_argument('--est_refine_iter', type=int, default=5)
   parser.add_argument('--track_refine_iter', type=int, default=2)
   parser.add_argument('--debug', type=int, default=1)
@@ -34,6 +34,7 @@ if __name__=='__main__':
       model_pts = mesh.vertices
   else:
       # It's already a Trimesh object
+      mesh = mesh_or_scene
       model_pts = mesh_or_scene.vertices
 
   debug = args.debug
