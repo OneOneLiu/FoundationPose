@@ -11,6 +11,15 @@ from Utils import *
 import json,os,sys
 
 
+
+# 在文件开头引入：
+import nvdiffrast.torch as nvr
+
+# 把 nvdiffrast 的类和函数直接挂到 datareader 模块上
+RasterizeCudaContext = nvr.RasterizeCudaContext
+rasterize = nvr.rasterize
+
+
 BOP_LIST = ['lmo','tless','ycbv','hb','tudl','icbin','itodd']
 BOP_DIR = os.getenv('BOP_DIR')
 

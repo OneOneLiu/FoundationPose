@@ -1,79 +1,169 @@
-# Copyright (c) 2023, NVIDIA CORPORATION.  All rights reserved.
-#
-# NVIDIA CORPORATION and its licensors retain all intellectual property
-# and proprietary rights in and to this software, related documentation
-# and any modifications thereto.  Any use, reproduction, disclosure or
-# distribution of this software and related documentation without an express
-# license agreement from NVIDIA CORPORATION is strictly prohibited.
+#!/usr/bin/env python3
+import os
+import threading
+import logging
+
+import rclpy
+from rclpy.node import Node
+from std_msgs.msg import Int32
+
+import trimesh
+import numpy as np
+import cv2
+import imageio
+
+import datareader as dr
+from estimater import (
+    ScorePredictor,
+    PoseRefinePredictor,
+    FoundationPose,
+    set_logging_format,
+    set_seed,
+    depth2xyzmap,
+    toOpen3dCloud,
+    draw_posed_3d_box,
+    draw_xyz_axis,
+)
 
 
-from estimater import *
-from datareader import *
-import argparse
+def cleanup_debug_dir(debug_dir):
+    os.system(f'rm -rf {debug_dir}/* && mkdir -p {debug_dir}/track_vis {debug_dir}/ob_in_cam')
 
 
-if __name__=='__main__':
-  parser = argparse.ArgumentParser()
-  code_dir = os.path.dirname(os.path.realpath(__file__))
-  parser.add_argument('--mesh_file', type=str, default=f'{code_dir}/demo_data/mustard0/mesh/textured_simple.obj')
-  parser.add_argument('--test_scene_dir', type=str, default=f'{code_dir}/demo_data/mustard0')
-  parser.add_argument('--est_refine_iter', type=int, default=5)
-  parser.add_argument('--track_refine_iter', type=int, default=2)
-  parser.add_argument('--debug', type=int, default=1)
-  parser.add_argument('--debug_dir', type=str, default=f'{code_dir}/debug')
-  args = parser.parse_args()
+class FoundationPoseNode(Node):
+    def __init__(self):
+        super().__init__('foundation_pose_node')
+        self.started = False
 
-  set_logging_format()
-  set_seed(0)
+        # Subscriber: only start when receives '1'
+        self.create_subscription(
+            Int32, '/pose_start', self.start_cb, 10
+        )
+        self.get_logger().info('FoundationPoseNode ready, waiting for /pose_start=1')
 
-  mesh = trimesh.load(args.mesh_file)
+        # Declare parameters (with defaults matching demo)
+        code_dir = os.path.dirname(os.path.realpath(__file__))
+        self.declare_parameter('mesh_file', f'{code_dir}/demo_data/mustard0/mesh/textured_simple.obj')
+        self.declare_parameter('test_scene_dir', f'{code_dir}/demo_data/mustard0')
+        self.declare_parameter('est_refine_iter', 5)
+        self.declare_parameter('track_refine_iter', 2)
+        self.declare_parameter('debug', 1)
+        self.declare_parameter('debug_dir', f'{code_dir}/debug')
 
-  debug = args.debug
-  debug_dir = args.debug_dir
-  os.system(f'rm -rf {debug_dir}/* && mkdir -p {debug_dir}/track_vis {debug_dir}/ob_in_cam')
+    def start_cb(self, msg: Int32):
+        if msg.data == 1 and not self.started:
+            self.started = True
+            self.get_logger().info('Received start signal, beginning pose estimation demo...')
+            # Run in a background thread to avoid blocking the executor
+            threading.Thread(target=self.run_demo, daemon=True).start()
+        elif msg.data == 1:
+            self.get_logger().info('Pose estimation already running.')
 
-  to_origin, extents = trimesh.bounds.oriented_bounds(mesh)
-  bbox = np.stack([-extents/2, extents/2], axis=0).reshape(2,3)
+    def run_demo(self):
+        # Read parameters
+        mesh_file = self.get_parameter('mesh_file').value
+        test_scene_dir = self.get_parameter('test_scene_dir').value
+        est_refine_iter = self.get_parameter('est_refine_iter').value
+        track_refine_iter = self.get_parameter('track_refine_iter').value
+        debug = self.get_parameter('debug').value
+        debug_dir = self.get_parameter('debug_dir').value
 
-  scorer = ScorePredictor()
-  refiner = PoseRefinePredictor()
-  glctx = dr.RasterizeCudaContext()
-  est = FoundationPose(model_pts=mesh.vertices, model_normals=mesh.vertex_normals, mesh=mesh, scorer=scorer, refiner=refiner, debug_dir=debug_dir, debug=debug, glctx=glctx)
-  logging.info("estimator initialization done")
+        # Logging & RNG
+        set_logging_format()
+        set_seed(0)
 
-  reader = YcbineoatReader(video_dir=args.test_scene_dir, shorter_side=None, zfar=np.inf)
+        # Load mesh
+        # t0 = time.time() if hasattr(time, 'time') else None
+        mesh = trimesh.load(mesh_file)
+        self.get_logger().info(f'Mesh loaded from {mesh_file}')
 
-  for i in range(len(reader.color_files)):
-    logging.info(f'i:{i}')
-    color = reader.get_color(i)
-    depth = reader.get_depth(i)
-    if i==0:
-      mask = reader.get_mask(0).astype(bool)
-      pose = est.register(K=reader.K, rgb=color, depth=depth, ob_mask=mask, iteration=args.est_refine_iter)
+        # Prepare debug dirs
+        cleanup_debug_dir(debug_dir)
 
-      if debug>=3:
-        m = mesh.copy()
-        m.apply_transform(pose)
-        m.export(f'{debug_dir}/model_tf.obj')
-        xyz_map = depth2xyzmap(depth, reader.K)
-        valid = depth>=0.001
-        pcd = toOpen3dCloud(xyz_map[valid], color[valid])
-        o3d.io.write_point_cloud(f'{debug_dir}/scene_complete.ply', pcd)
-    else:
-      pose = est.track_one(rgb=color, depth=depth, K=reader.K, iteration=args.track_refine_iter)
+        # Compute oriented bounding box
+        to_origin, extents = trimesh.bounds.oriented_bounds(mesh)
+        bbox = np.stack([-extents/2, extents/2], axis=0).reshape(2, 3)
 
-    os.makedirs(f'{debug_dir}/ob_in_cam', exist_ok=True)
-    np.savetxt(f'{debug_dir}/ob_in_cam/{reader.id_strs[i]}.txt', pose.reshape(4,4))
+        # Initialize networks & renderer
+        scorer = ScorePredictor()
+        refiner = PoseRefinePredictor()
+        glctx = dr.RasterizeCudaContext()
+        est = FoundationPose(
+            model_pts=mesh.vertices,
+            model_normals=mesh.vertex_normals,
+            mesh=mesh,
+            scorer=scorer,
+            refiner=refiner,
+            debug_dir=debug_dir,
+            debug=debug,
+            glctx=glctx,
+        )
+        self.get_logger().info('Estimator initialized')
 
-    if debug>=1:
-      center_pose = pose@np.linalg.inv(to_origin)
-      vis = draw_posed_3d_box(reader.K, img=color, ob_in_cam=center_pose, bbox=bbox)
-      vis = draw_xyz_axis(color, ob_in_cam=center_pose, scale=0.1, K=reader.K, thickness=3, transparency=0, is_input_rgb=True)
-      cv2.imshow('1', vis[...,::-1])
-      cv2.waitKey(1)
+        # Reader for demo data
+        reader = dr.YcbineoatReader(video_dir=test_scene_dir, shorter_side=None, zfar=np.inf)
+
+        # Main loop over frames
+        for i in range(len(reader.color_files)):
+            self.get_logger().info(f'Processing frame {i}/{len(reader.color_files)-1}')
+            color = reader.get_color(i)
+            depth = reader.get_depth(i)
+
+            if i == 0:
+                mask = reader.get_mask(0).astype(bool)
+                pose = est.register(
+                    K=reader.K,
+                    rgb=color,
+                    depth=depth,
+                    ob_mask=mask,
+                    iteration=est_refine_iter,
+                )
+            else:
+                pose = est.track_one(
+                    rgb=color,
+                    depth=depth,
+                    K=reader.K,
+                    iteration=track_refine_iter,
+                )
+
+            # Save pose
+            os.makedirs(f'{debug_dir}/ob_in_cam', exist_ok=True)
+            np.savetxt(f'{debug_dir}/ob_in_cam/{reader.id_strs[i]}.txt', pose.reshape(4, 4))
+
+            # Visualization
+            center_pose = pose @ np.linalg.inv(to_origin)
+            vis = draw_posed_3d_box(
+                reader.K,
+                img=color,
+                ob_in_cam=center_pose,
+                bbox=bbox,
+            )
+            vis = draw_xyz_axis(
+                color,
+                ob_in_cam=center_pose,
+                scale=0.1,
+                K=reader.K,
+                thickness=3,
+                transparency=0,
+                is_input_rgb=True,
+            )
+            cv2.imshow('Pose Demo', vis[..., ::-1])
+            cv2.waitKey(1)
+
+            if debug >= 2:
+                os.makedirs(f'{debug_dir}/track_vis', exist_ok=True)
+                imageio.imwrite(f'{debug_dir}/track_vis/{reader.id_strs[i]}.png', vis)
+
+        self.get_logger().info('Pose estimation demo completed.')
 
 
-    if debug>=2:
-      os.makedirs(f'{debug_dir}/track_vis', exist_ok=True)
-      imageio.imwrite(f'{debug_dir}/track_vis/{reader.id_strs[i]}.png', vis)
+def main(args=None):
+    rclpy.init(args=args)
+    node = FoundationPoseNode()
+    rclpy.spin(node)
+    node.destroy_node()
+    rclpy.shutdown()
 
+
+if __name__ == '__main__':
+    main()

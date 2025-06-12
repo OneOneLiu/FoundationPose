@@ -1,28 +1,60 @@
-FROM nvidia/cuda:12.2.0-devel-ubuntu20.04
+FROM nvidia/cuda:12.2.0-devel-ubuntu22.04
 
-# Non-interactive installs
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=US/Pacific
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=US/Pacific \
+    LANG=en_US.UTF-8 \
+    ROS_DISTRO=humble
 
-# Set timezone before installing tzdata
-RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+# 设置时区
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
+    && echo $TZ > /etc/timezone
 
-# Install system dependencies
-RUN apt-get update --fix-missing && \
-    apt-get install -y --no-install-recommends \
-    tzdata \
-    libgtk2.0-dev wget bzip2 ca-certificates curl git vim tmux \
-    g++ gcc build-essential cmake checkinstall gfortran \
-    libjpeg8-dev libtiff5-dev pkg-config yasm libavcodec-dev \
-    libavformat-dev libswscale-dev libdc1394-22-dev libxine2-dev \
-    libv4l-dev qt5-default libtbb-dev libatlas-base-dev libfaac-dev \
-    libmp3lame-dev libtheora-dev libvorbis-dev libxvidcore-dev \
-    libopencore-amrnb-dev libopencore-amrwb-dev x264 v4l-utils \
-    libprotobuf-dev protobuf-compiler libgoogle-glog-dev \
-    libgflags-dev libgphoto2-dev libhdf5-dev doxygen libflann-dev \
-    libboost-all-dev proj-data libproj-dev libyaml-cpp-dev \
-    cmake-curses-gui libzmq3-dev freeglut3-dev && \
-    rm -rf /var/lib/apt/lists/*
+# 系统依赖 + Python3 + pip
+RUN apt-get update --fix-missing \
+    && apt-get install -y --no-install-recommends \
+    tzdata curl gnupg2 lsb-release software-properties-common git \
+    build-essential cmake gfortran pkg-config \
+    libgtk2.0-dev libjpeg8-dev libtiff5-dev libavcodec-dev libavformat-dev libswscale-dev \
+    libv4l-dev libdc1394-dev qtbase5-dev libtbb-dev \
+    libatlas-base-dev libfaac-dev libmp3lame-dev libtheora-dev \
+    libvorbis-dev libxvidcore-dev libopencore-amrnb-dev libopencore-amrwb-dev \
+    x264 v4l-utils libprotobuf-dev protobuf-compiler \
+    libgoogle-glog-dev libgflags-dev libhdf5-dev libflann-dev \
+    libboost-all-dev libproj-dev libyaml-cpp-dev libzmq3-dev \
+    freeglut3-dev libfreetype6-dev libfontconfig1-dev \
+    python3 python3-pip python3-setuptools python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install ROS2
+RUN apt update && apt install locales && locale-gen en_US.UTF-8 && update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 && \
+    export LANG=en_US.UTF-8 && \
+    apt install -y software-properties-common && \
+    add-apt-repository universe && \
+    apt update && apt install curl -y && \
+    curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" | tee /etc/apt/sources.list.d/ros2.list > /dev/null && \
+    apt update && \
+    apt upgrade -y && \
+    # The following two lines are for fixing the libbrotli1 version issue in isaac sim 4.5.0 version
+    apt install -y libbrotli1=1.0.9-2build6 libbrotli-dev --allow-downgrades && \
+    apt install -y libfreetype6-dev libfontconfig1-dev && \
+    apt install -y ros-humble-desktop
+
+ENV ROS_DISTRO=humble
+
+# Install ROS2 essentials
+RUN apt update -y && \
+    apt install -y python3-rosdep python3-rosinstall python3-rosinstall-generator python3-wstool && \
+    rosdep init && \
+    rosdep update && \
+    apt update && \
+    apt dist-upgrade -y && \
+    apt install -y python3-colcon-common-extensions && \
+    apt install -y python3-colcon-mixin && \
+    colcon mixin add default https://raw.githubusercontent.com/colcon/colcon-mixin-repository/master/index.yaml && \
+    colcon mixin update default && \
+    apt install -y python3-vcstool && \
+    apt install -y ros-humble-topic-based-ros2-control
 
 # Build and install pybind11
 RUN git clone https://github.com/pybind/pybind11 /pybind11 && \
@@ -31,59 +63,48 @@ RUN git clone https://github.com/pybind/pybind11 /pybind11 && \
     cmake .. -DCMAKE_BUILD_TYPE=Release -DPYBIND11_INSTALL=ON -DPYBIND11_TEST=OFF && \
     make -j$(nproc) && make install
 
+RUN apt-get update && apt-get install -y wget
 # Build and install Eigen
 RUN wget -q https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.tar.gz && \
     tar xvzf eigen-3.4.0.tar.gz && cd eigen-3.4.0 && \
     mkdir build && cd build && cmake .. && make install && \
     rm -rf /eigen-3.4.0 eigen-3.4.0.tar.gz
 
-# Use bash login shell for Conda initialization
-SHELL ["/bin/bash", "--login", "-c"]
+RUN pip3 install --no-cache-dir numpy==1.24.3 matplotlib
 
-# Install Miniconda and create 'my' environment
-RUN wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /miniconda.sh && \
-    bash /miniconda.sh -b -p /opt/conda && rm /miniconda.sh && \
-    /opt/conda/bin/conda update -n base -c defaults conda -y && \
-    /opt/conda/bin/conda create -n my python=3.8 -y
-
-# Add both base conda and 'my' env to PATH
-ENV PATH=/opt/conda/bin:/opt/conda/envs/my/bin:$PATH
-RUN conda init bash
-
-# Install PyTorch & related libraries in 'my' 
-# check this page for version compatibility: https://pytorch.org/get-started/previous-versions/
-RUN conda run -n my pip install \
-    torch==2.2.2+cu121 \
-    torchvision==0.17.2+cu121 \
-    torchaudio==2.2.2+cu121 \
-    --extra-index-url https://download.pytorch.org/whl/cu121 && \
-    conda run -n my pip install "git+https://github.com/facebookresearch/pytorch3d.git@stable" && \
-    conda run -n my pip install \
+# Python ML / CV 依赖
+RUN pip3 install --no-cache-dir \
+    torch==2.2.2+cu121 torchvision==0.17.2+cu121 torchaudio==2.2.2+cu121 \
+    --extra-index-url https://download.pytorch.org/whl/cu121 \
+    && pip3 install --no-cache-dir git+https://github.com/facebookresearch/pytorch3d.git@stable \
+    && pip3 install --no-cache-dir \
     scipy joblib scikit-learn ruamel.yaml trimesh pyyaml \
     opencv-python imageio open3d transformations warp-lang \
-    einops kornia pyrender
+    einops kornia pyrender scikit-image meshcat \
+    webdataset omegaconf pypng roma seaborn \
+    opencv-contrib-python openpyxl wandb imgaug \
+    Ninja xlsxwriter timm albumentations xatlas \
+    rtree jupyterlab objaverse g4f \
+    ultralytics==8.0.120 pycocotools videoio numba h5py
 
-# Build & install Kaolin
-RUN git clone --recursive https://github.com/NVIDIAGameWorks/kaolin /kaolin && \
-    conda run -n my pip install "Cython>=0.29.37" && \
-    cd /kaolin && conda run -n my python setup.py develop
+# Kaolin: build and install from source
+RUN git clone --depth 1 https://github.com/NVIDIAGameWorks/kaolin /kaolin \
+    && cd /kaolin \
+    && pip3 install --no-cache-dir Cython \
+    && python3 setup.py develop \
+    && cd / \
+    && rm -rf /kaolin
 
-# Build & install nvdiffrast
-RUN git clone https://github.com/NVlabs/nvdiffrast /nvdiffrast && \
-    cd /nvdiffrast && conda run -n my pip install .
+# nvdiffrast: build and install from source
+RUN git clone --depth 1 https://github.com/NVlabs/nvdiffrast /nvdiffrast \
+    && cd /nvdiffrast \
+    && pip3 install --no-cache-dir . \
+    && cd / \
+    && rm -rf /nvdiffrast
 
-# Additional Python packages
-RUN conda run -n my pip install \
-    scikit-image meshcat webdataset omegaconf pypng roma seaborn \
-    opencv-contrib-python openpyxl wandb imgaug Ninja xlsxwriter \
-    timm albumentations xatlas rtree nodejs jupyterlab objaverse \
-    g4f ultralytics==8.0.120 pycocotools videoio numba && \
-    conda run -n my conda install -y -c anaconda h5py
-
+RUN pip3 install --no-cache-dir numpy==1.24.3 matplotlib
+# 工作目录及入口脚本
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["bash"]
-
-# Fix /bin/sh link
-RUN ln -sf /bin/bash /bin/sh
