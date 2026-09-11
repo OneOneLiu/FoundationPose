@@ -8,6 +8,7 @@
 
 
 from Utils import *
+
 from datareader import *
 import itertools
 from learning.training.predict_score import *
@@ -267,4 +268,38 @@ class FoundationPose:
     self.pose_last = pose
     return (pose@self.get_tf_to_centered_mesh()).data.cpu().numpy().reshape(4,4)
 
+  def track_multiple(self, rgb, depth, K, init_poses, iteration):
+      """
+      多物体无状态追踪。
+      :param init_poses: List[np.ndarray]，每个为 shape (4,4)
+      :return: List[np.ndarray]，refined poses
+      """
+      depth = torch.as_tensor(depth, device='cuda', dtype=torch.float)
+      depth = erode_depth(depth, radius=2, device='cuda')
+      depth = bilateral_filter_depth(depth, radius=2, device='cuda')
+      logging.info("depth processing done")
 
+      xyz_map = depth2xyzmap_batch(depth[None], torch.as_tensor(K, dtype=torch.float, device='cuda')[None], zfar=np.inf)[0]
+
+      ob_in_cams = np.stack(init_poses, axis=0)  # shape (N,4,4)
+
+      refined_poses, _ = self.refiner.predict(
+          mesh=self.mesh,
+          mesh_tensors=self.mesh_tensors,
+          rgb=rgb,
+          depth=depth,
+          K=K,
+          ob_in_cams=ob_in_cams,
+          normal_map=None,
+          xyz_map=xyz_map,
+          mesh_diameter=self.diameter,
+          glctx=self.glctx,
+          iteration=iteration,
+          get_vis=(self.debug >= 2)
+      )
+
+      # 变换回原坐标系（一个个乘回 centered transform）
+      return [
+          (pose @ self.get_tf_to_centered_mesh()).cpu().numpy().reshape(4, 4)
+          for pose in refined_poses
+      ]

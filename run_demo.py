@@ -15,8 +15,8 @@ import argparse
 if __name__=='__main__':
     parser = argparse.ArgumentParser()
     code_dir = os.path.dirname(os.path.realpath(__file__))
-    parser.add_argument('--mesh_file', type=str, default=f'{code_dir}/demo_data/mustard0/mesh/textured_simple.obj')
-    parser.add_argument('--test_scene_dir', type=str, default=f'{code_dir}/demo_data/mustard0')
+    parser.add_argument('--mesh_file', type=str, default=f'{code_dir}/demo_data/tube75/mesh/tube75_combined.obj')
+    parser.add_argument('--test_scene_dir', type=str, default=f'{code_dir}/demo_data/tube75')
     parser.add_argument('--est_refine_iter', type=int, default=5)
     parser.add_argument('--track_refine_iter', type=int, default=2)
     parser.add_argument('--debug', type=int, default=1)
@@ -47,11 +47,11 @@ if __name__=='__main__':
         logging.info(f'i:{i}')
         color = reader.get_color(i)
         depth = reader.get_depth(i)
-        if i==0:
+        if i==0: # 第 0 帧：用 register() 做初始全局搜索 + 多次迭代细化。
             mask = reader.get_mask(0).astype(bool)
             pose = est.register(K=reader.K, rgb=color, depth=depth, ob_mask=mask, iteration=args.est_refine_iter)
 
-        if debug>=3:
+        if debug>=3: # 后续帧：用 track_one() 直接在上一帧结果基础上快速跟踪 + 微调。
             m = mesh.copy()
             m.apply_transform(pose)
             m.export(f'{debug_dir}/model_tf.obj')

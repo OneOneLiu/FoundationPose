@@ -128,6 +128,34 @@ class YcbineoatReader:
     mask = cv2.resize(mask, (self.W,self.H), interpolation=cv2.INTER_NEAREST).astype(bool).astype(np.uint8)
     return mask
 
+  def get_mask_multiple(self, i):
+    """
+    获取第 i 帧中所有前景实例的 mask。
+    返回: List[np.ndarray]，每个元素是一个二值 mask，背景 (i=0) 会被忽略。
+    """
+    # 构造 mask 子目录路径
+    img_name = os.path.basename(self.color_files[i])  # e.g., "000001.png"
+    timestamp = img_name.split('.')[0].replace('rgb_image_', '')  # e.g., "000001"
+    mask_dir = os.path.join(self.video_dir, 'gt_instance_masks', f'mask_image_{timestamp}')
+
+    if not os.path.exists(mask_dir):
+        raise FileNotFoundError(f"Mask directory not found: {mask_dir}")
+
+    masks = []
+    for file in sorted(os.listdir(mask_dir)):
+        if not file.endswith('.png'):
+            continue
+        if 'mask_instance_0.png' in file:
+            continue  # 跳过背景
+
+        mask_path = os.path.join(mask_dir, file)
+        mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)  # 单通道
+        mask = cv2.resize(mask, (self.W, self.H), interpolation=cv2.INTER_NEAREST).astype(bool).astype(np.uint8)
+        if mask.sum() > 0:
+            masks.append(mask)
+
+    return masks
+
   def get_depth(self,i):
     depth = cv2.imread(self.color_files[i].replace('rgb','depth'),-1)/1e3
     depth = cv2.resize(depth, (self.W,self.H), interpolation=cv2.INTER_NEAREST)
@@ -618,5 +646,4 @@ class TudlReader(BopBaseReader):
   def get_gt_mesh_file(self, ob_id):
     mesh_file = f'{self.base_dir}/../../../tudl_models/models/obj_{ob_id:06d}.ply'
     return mesh_file
-
 
